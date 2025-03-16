@@ -8,7 +8,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from tqdm import tqdm
 
 
-def Lmatrix2paths(L, n_sample, normalize=False, seed=0):
+def Lmatrix2paths(L, n_sample, normalize=False, seed=0, verbose=True):
     r"""
     Lower triangular matrix L to covariance matrix A and generated paths
     """
@@ -18,10 +18,11 @@ def Lmatrix2paths(L, n_sample, normalize=False, seed=0):
 
     # np.linalg.cholesky(A) -  L (sanity check)
 
-    print("Cholesky:")
-    print(L)
-    print("Covariance:")
-    print(A)
+    if verbose:
+        print("Cholesky:")
+        print(L)
+        print("Covariance:")
+        print(A)
 
     T = len(L)
 
@@ -55,14 +56,12 @@ def adapted_wasserstein_squared(A, B, a=0, b=0):
     return mean_diff + trace_sum - 2 * l1_diag
 
 
-def quantization(adaptedX, adaptedY, markovian=False):
-    print("Quantization ......")
+def quantization(adaptedX, adaptedY, markovian=False, verbose=True):
     T = len(adaptedX) - 1
 
     # Global quantization for X union Y samples on grid
     q2v = np.unique(np.concatenate([adaptedX, adaptedY], axis=0))
     v2q = {k: v for v, k in enumerate(q2v)}  # Value to Quantization
-    print("Number of distinct values in global quantization: ", len(q2v))
 
     def adapted_path2conditional_measure(adaptedpath, v2q, markovian):
         r"""
@@ -89,14 +88,17 @@ def quantization(adaptedX, adaptedY, markovian=False):
 
     mu_x = adapted_path2conditional_measure(adaptedX, v2q, markovian=markovian)
     nu_y = adapted_path2conditional_measure(adaptedY, v2q, markovian=markovian)
+    if verbose:
+        print("Quantization ......")
+        print("Number of distinct values in global quantization: ", len(q2v))
 
-    print("Number of condition subpaths of mu_x")
-    for t in range(T):
-        print(f"Time {t}: {len(mu_x[t])}")
+        print("Number of condition subpaths of mu_x")
+        for t in range(T):
+            print(f"Time {t}: {len(mu_x[t])}")
 
-    print("Number of condition subpaths of nu_y")
-    for t in range(T):
-        print(f"Time {t}: {len(nu_y[t])}")
+        print("Number of condition subpaths of nu_y")
+        for t in range(T):
+            print(f"Time {t}: {len(nu_y[t])}")
 
     # Conditional Measure to Time Quantization
     # Quantization of history sub-paths
@@ -112,16 +114,18 @@ def quantization(adaptedX, adaptedY, markovian=False):
     return q2v, v2q, mu_x, nu_y, q2v_x, v2q_x, q2v_y, v2q_y
 
 
-def nested(mu_x, nu_y, v2q_x, v2q_y, q2v, markovian=False):
+def nested(mu_x, nu_y, v2q_x, v2q_y, q2v, markovian=False, verbose=True):
     T = len(mu_x)
     square_cost_matrix = (q2v[None, :] - q2v[None, :].T) ** 2
 
     V = [np.zeros([len(v2q_x[t]), len(v2q_y[t])]) for t in range(T)]
-    print("Nested backward induction .......")
+    if verbose:
+        print("Nested backward induction .......")
     for t in range(T - 1, -1, -1):
-        tqdm_bar = tqdm(mu_x[t].items())
+        tqdm_bar = tqdm(mu_x[t].items()) if verbose else mu_x[t].items()
         for k1, v1 in tqdm_bar:
-            tqdm_bar.set_description(f"Timestep {t}")
+            if verbose:
+                tqdm_bar.set_description(f"Timestep {t}")
             for k2, v2 in nu_y[t].items():
                 # list of probability of conditional distribution mu_x
                 w1 = list(v1.values())
@@ -146,15 +150,9 @@ def nested(mu_x, nu_y, v2q_x, v2q_y, q2v, markovian=False):
                         q1s = [v2q_x[t + 1][k1 + (q,)] for q in v1.keys()]
                         q2s = [v2q_y[t + 1][k2 + (q,)] for q in v2.keys()]
                     cost += V[t + 1][np.ix_(q1s, q2s)]
-                try:
-                    V[t][v2q_x[t][k1], v2q_y[t][k2]] = ot.emd2(
-                        w1, w2, cost
-                    )  # solve the OT problem with cost |x_t-y_t|^2 + V_{t+1}(x_{1:t},y_{1:t})
-                except:
-                    print(k1, k2)
-                    print(v2q_x[t][k1], v2q_y[t][k2])
-                    print(V[t].shape)
-                    V[1.2]
+
+                # solve the OT problem with cost |x_t-y_t|^2 + V_{t+1}(x_{1:t},y_{1:t})
+                V[t][v2q_x[t][k1], v2q_y[t][k2]] = ot.emd2(w1, w2, cost)
 
     AW_2square = V[0][0, 0]
     return AW_2square, V
