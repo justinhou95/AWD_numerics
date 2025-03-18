@@ -34,7 +34,7 @@ def Lmatrix2paths(L, n_sample, normalize=False, seed=0, verbose=True):
 
 
 def adapted_empirical_measure(samples, delta_n):
-    r"""
+    """
     Project paths to adapted grids
     """
     grid_func = lambda x: np.floor(x / delta_n + 0.5) * delta_n
