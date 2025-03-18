@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from utils import (
+from src.utils_solver import (
     Lmatrix2paths,
     adapted_empirical_measure,
     adapted_wasserstein_squared,
@@ -73,11 +73,11 @@ if __name__ == "__main__":
 
     n = 5
     n_trial = 10
-    n_sample_base = 1
-    n_sample_list = 2 ** np.arange(n) * n_sample_base
+    n_sample_base = 1000
+    n_sample_list = np.array([1000, 2000, 3000, 4000])
 
     # Markovian
     L = np.array([[1, 0, 0], [1, 2, 0], [2, 4, 2]])
     M = np.array([[1, 0, 0], [2, 1, 0], [2, 1, 2]])
-    AW_2squares, AW_2bench = compute_AW2squares(L, M, markovian=True)
-    plot_error(AW_2squares, AW_2bench, markovian=True)
+    AW_2squares, AW_2bench = compute_AW2squares(L, M, markovian=False)
+    plot_error(AW_2squares, AW_2bench, markovian=False)
