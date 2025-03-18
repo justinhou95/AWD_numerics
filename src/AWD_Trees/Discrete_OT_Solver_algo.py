@@ -144,68 +144,70 @@ def solver_pot_sinkhorn(distance_matrix_subset, pi_ratios, pi_tilde_ratios, epsi
     return ot.sinkhorn(pi_ratios, pi_tilde_ratios, distance_matrix_subset, epsilon)
 
 
-# Some other technique I tried to be faster but failed
-import jax.numpy as jnp
-from ott.geometry import geometry  # Correct module for defining cost matrices
-from ott.problems.linear import linear_problem
-from ott.solvers.linear import sinkhorn
-
 """
 I attempted to speed up the computation using JAX, but it did not yield significant improvements. 
 I also experimented with parallelization, but the results were not satisfactory. 
 However, if you have access to a CUDA-compatible GPU, these computations could be significantly accelerated.
+
+Songyan: I comment the below out for the time being but we can explore this later
 """
 
+# # Some other technique I tried to be faster but failed
+# import jax.numpy as jnp
+# from ott.geometry import geometry  # Correct module for defining cost matrices
+# from ott.problems.linear import linear_problem
+# from ott.solvers.linear import sinkhorn
 
-def solver_jax(distance_matrix_np, p1_np, p2_np, epsilon, threshold=1e-4):
-    """
-    Computes the entropically regularized optimal transport plan using OTT's Sinkhorn solver,
-    with a precomputed distance matrix.
 
-    Parameters:
-      p1_np (np.ndarray): Source probability distribution (1D, sums to 1), shape (n,).
-      p2_np (np.ndarray): Target probability distribution (1D, sums to 1), shape (m,).
-      distance_matrix_np (np.ndarray): Cost matrix of shape (n, m).
-      epsilon (float): Entropic regularization parameter.
-      threshold (float): Convergence threshold.
+# def solver_jax(distance_matrix_np, p1_np, p2_np, epsilon, threshold=1e-4):
+#     """
+#     Computes the entropically regularized optimal transport plan using OTT's Sinkhorn solver,
+#     with a precomputed distance matrix.
 
-    Returns:
-      np.ndarray: Optimal transport plan matrix of shape (n, m).
-    """
-    # Convert inputs from NumPy to JAX arrays.
+#     Parameters:
+#       p1_np (np.ndarray): Source probability distribution (1D, sums to 1), shape (n,).
+#       p2_np (np.ndarray): Target probability distribution (1D, sums to 1), shape (m,).
+#       distance_matrix_np (np.ndarray): Cost matrix of shape (n, m).
+#       epsilon (float): Entropic regularization parameter.
+#       threshold (float): Convergence threshold.
 
-    p1_np = np.array(p1_np, dtype=np.float64)
-    p2_np = np.array(p2_np, dtype=np.float64)
-    distance_matrix_np = np.array(distance_matrix_np, dtype=np.float64)
+#     Returns:
+#       np.ndarray: Optimal transport plan matrix of shape (n, m).
+#     """
+#     # Convert inputs from NumPy to JAX arrays.
 
-    p1_np /= np.sum(p1_np)
-    p2_np /= np.sum(p2_np)
+#     p1_np = np.array(p1_np, dtype=np.float64)
+#     p2_np = np.array(p2_np, dtype=np.float64)
+#     distance_matrix_np = np.array(distance_matrix_np, dtype=np.float64)
 
-    distance_matrix_np /= np.max(distance_matrix_np)
+#     p1_np /= np.sum(p1_np)
+#     p2_np /= np.sum(p2_np)
 
-    p1 = jnp.array(p1_np)
-    p2 = jnp.array(p2_np)
-    cost_mat = jnp.array(distance_matrix_np)
+#     distance_matrix_np /= np.max(distance_matrix_np)
 
-    # Create geometry using the precomputed cost matrix.
-    geom = geometry.Geometry(cost_matrix=cost_mat, epsilon=epsilon)
+#     p1 = jnp.array(p1_np)
+#     p2 = jnp.array(p2_np)
+#     cost_mat = jnp.array(distance_matrix_np)
 
-    # Set up the linear problem with the given marginals.
-    prob = linear_problem.LinearProblem(geom, a=p1, b=p2)
+#     # Create geometry using the precomputed cost matrix.
+#     geom = geometry.Geometry(cost_matrix=cost_mat, epsilon=epsilon)
 
-    # Create the Sinkhorn solver instance.
-    solver = sinkhorn.Sinkhorn(
-        threshold=threshold,
-        max_iterations=1000,
-        norm_error=2,
-        lse_mode=True,
-    )
+#     # Set up the linear problem with the given marginals.
+#     prob = linear_problem.LinearProblem(geom, a=p1, b=p2)
 
-    # Solve the OT problem.
-    out = solver(prob)
+#     # Create the Sinkhorn solver instance.
+#     solver = sinkhorn.Sinkhorn(
+#         threshold=threshold,
+#         max_iterations=1000,
+#         norm_error=2,
+#         lse_mode=True,
+#     )
 
-    # Extract the transport plan.
-    transport_plan = out.matrix  # Correct way to extract the transport matrix
+#     # Solve the OT problem.
+#     out = solver(prob)
 
-    # Convert the transport plan back to a NumPy array.
-    return np.array(transport_plan)
+#     # Extract the transport plan.
+#     transport_plan = out.matrix  # Correct way to extract the transport matrix
+
+#     # Convert the transport plan back to a NumPy array.
+#     return np.array(transport_plan)
