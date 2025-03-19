@@ -8,7 +8,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from tqdm import tqdm
 
 
-def Lmatrix2paths(L, n_sample, normalize=False, seed=0, verbose=True):
+def Lmatrix2paths(L, n_sample, normalize=False, seed=0, verbose=False):
     r"""
     Lower triangular matrix L to covariance matrix A and generated paths
     """
@@ -33,13 +33,61 @@ def Lmatrix2paths(L, n_sample, normalize=False, seed=0, verbose=True):
     return X, A
 
 
-def adapted_empirical_measure(samples, delta_n):
+def path2adaptedpath(samples, delta_n):
     """
     Project paths to adapted grids
     """
     grid_func = lambda x: np.floor(x / delta_n + 0.5) * delta_n
     adapted_samples = grid_func(samples)
     return adapted_samples
+
+
+def sort_qpath(path):
+    T = path.shape[-1] - 1
+    sorting_keys = [path[:, i] for i in range(T, -1, -1)]
+    return path[np.lexsort(tuple(sorting_keys))]
+
+
+def qpath2mu_x(qpath, markovian=False):
+    r"""
+    Quantized Path to Conditional Measure
+    non-Markovian:
+    mu_x[0] = {(3,): {1: 1, 2: 5}}
+    Markovian:
+    mu_x[0] = {3: {1: 1, 2: 5}}
+    """
+    T = qpath.shape[-1] - 1
+    mu_x = [defaultdict(dict) for t in range(T)]
+    for path in qpath:
+        for t in range(T):
+            if markovian:
+                pre_path = path[t]
+            else:
+                pre_path = tuple([int(x) for x in path[: t + 1]])  #
+            next_val = int(path[t + 1])
+            if pre_path not in mu_x[t] or next_val not in mu_x[t][pre_path]:
+                mu_x[t][pre_path][next_val] = 1
+            else:
+                mu_x[t][pre_path][next_val] += 1
+    return mu_x
+
+
+def list_repr_mu_x(mu_x):
+    # mu_x_c[t]: a list of x_{1:t}
+    mu_x_c = [list(mu_x_t.keys()) for mu_x_t in mu_x]
+    # mu_x_cn[t]: number of x_{1:t}
+    mu_x_cn = [len(mu_x_c_t) for mu_x_c_t in mu_x_c]
+    # mu_x_n[t] = a list of number of (x_{1:t},x_{t+1})
+    mu_x_n = [[len(d) for d in mu_x_t.values()] for mu_x_t in mu_x]
+    # mu_x_n[t] = a list of starting index of (x_{1:t},x_{t+1}) for different x_{t+1}
+    mu_x_cumn = [np.cumsum([0] + mu_x_n_t) for mu_x_n_t in mu_x_n]
+    # mu_x_v[t]: a list of [x_{t}, ...] (so a list of list of values)
+    mu_x_v = [[list(d.keys()) for d in mu_x_t.values()] for mu_x_t in mu_x]
+    # mu_x_w[t]: a list of [#(x_{1:t},(x_{t+1}), ...] (so a list of list of counts)
+    mu_x_w0 = [[list(d.values()) for d in mu_x_t.values()] for mu_x_t in mu_x]
+    # mu_x_w[t]: a list of [mu_{x_{1:t}}(x_{t+1}), ...] (so a list of list of weights)
+    mu_x_w = [[np.array(l) / sum(l) for l in mu_x_w0_t] for mu_x_w0_t in mu_x_w0]
+    return mu_x_c, mu_x_cn, mu_x_v, mu_x_w, mu_x_cumn
 
 
 def adapted_wasserstein_squared(A, B, a=0, b=0):
@@ -136,23 +184,31 @@ def nested(mu_x, nu_y, v2q_x, v2q_y, q2v, markovian=False, verbose=True):
                 # list of quantized values of conditional distribution mu_x (nu_y)
                 q1 = list(v1.keys())
                 q2 = list(v2.keys())
-                # square cost of the values indexed by quantized values: |q2v[q1] - q2v[q2]|^2
-                cost = square_cost_matrix[np.ix_(q1, q2)]
+                if len(q1) == 1 and len(q2) == 1 and t == T - 1:
+                    V[t][v2q_x[t][k1], v2q_y[t][k2]] = square_cost_matrix[
+                        np.ix_(q1, q2)
+                    ]
+                else:
+                    # square cost of the values indexed by quantized values: |q2v[q1] - q2v[q2]|^2
+                    cost = square_cost_matrix[np.ix_(q1, q2)]
 
-                # At T-1: add V[T] = 0, otherwise add the V[t+1] already computed
-                if t < T - 1:
-                    if (
-                        markovian
-                    ):  # If markovian, for condition path (k1,q), only the last value q matters, and V[t+1] is indexed by the time re-quantization of q
-                        q1s = [v2q_x[t + 1][q] for q in v1.keys()]
-                        q2s = [v2q_y[t + 1][q] for q in v2.keys()]
-                    else:  # If non-markovian, for condition path (k1,q), the V[t+1] is indexed by the time re-quantization of tuple (k1,q)
-                        q1s = [v2q_x[t + 1][k1 + (q,)] for q in v1.keys()]
-                        q2s = [v2q_y[t + 1][k2 + (q,)] for q in v2.keys()]
-                    cost += V[t + 1][np.ix_(q1s, q2s)]
+                    # At T-1: add V[T] = 0, otherwise add the V[t+1] already computed
+                    if t < T - 1:
+                        if (
+                            markovian
+                        ):  # If markovian, for condition path (k1,q), only the last value q matters, and V[t+1] is indexed by the time re-quantization of q
+                            q1s = [v2q_x[t + 1][q] for q in v1.keys()]
+                            q2s = [v2q_y[t + 1][q] for q in v2.keys()]
+                        else:  # If non-markovian, for condition path (k1,q), the V[t+1] is indexed by the time re-quantization of tuple (k1,q)
+                            q1s = [v2q_x[t + 1][k1 + (q,)] for q in v1.keys()]
+                            q2s = [v2q_y[t + 1][k2 + (q,)] for q in v2.keys()]
+                        cost += V[t + 1][np.ix_(q1s, q2s)]
 
-                # solve the OT problem with cost |x_t-y_t|^2 + V_{t+1}(x_{1:t},y_{1:t})
-                V[t][v2q_x[t][k1], v2q_y[t][k2]] = ot.emd2(w1, w2, cost)
+                    # solve the OT problem with cost |x_t-y_t|^2 + V_{t+1}(x_{1:t},y_{1:t})
+                    # V[t][v2q_x[t][k1], v2q_y[t][k2]] = ot.emd2(w1, w2, cost)
+                    V[t][v2q_x[t][k1], v2q_y[t][k2]] = np.sum(
+                        cost * ot.lp.emd(w1, w2, cost)
+                    )
 
     AW_2square = V[0][0, 0]
     return AW_2square, V
