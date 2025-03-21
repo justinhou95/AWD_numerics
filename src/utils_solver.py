@@ -1,6 +1,9 @@
 from collections import defaultdict
+import concurrent.futures
+import copy
 import random
 
+import concurrent
 import matplotlib.pyplot as plt
 import numpy as np
 import ot
@@ -72,22 +75,147 @@ def qpath2mu_x(qpath, markovian=False):
     return mu_x
 
 
-def list_repr_mu_x(mu_x):
-    # mu_x_c[t]: a list of x_{1:t}
+def list_repr_mu_x(mu_x, q2v, quantized_value=False):
+    r"""
+    represent mu_x[t] with
+    mu_x_c[t][i]: xq_{1:t} quantized conditional path up to time t
+    mu_x_v[t][i]: a list of values x_{t+1} follows x_{1:t}
+    mu_x_w[t][i]: a list of weights mu_{x_{1:t}}(x_{t+1})
+
+    e.g. if we have 4 paths (same paths count twice)
+    quantized <---> real-valued
+    (1, 2, 3) <---> (10, 20, 30)
+    (1, 2, 4) <---> (10, 20, 40)
+    (1, 2, 4) <---> (10, 20, 40)
+    (2, 3, 5) <---> (20, 30, 50)
+    Then we have:
+    mu_x_c[t=1] = [(1,2), (2,3)]
+    mu_x_v[t=1][i=1] = [30, 40]
+    mu_x_w[t=1][i=1] = [1/3, 2/3]
+
+    if quantized_value:
+     mu_x_v[t=1][i=1] = [3, 4]
+
+    """
+
+    # mu_x_c[t][i] = xq_{1:t}
     mu_x_c = [list(mu_x_t.keys()) for mu_x_t in mu_x]
-    # mu_x_cn[t]: number of x_{1:t}
-    mu_x_cn = [len(mu_x_c_t) for mu_x_c_t in mu_x_c]
-    # mu_x_n[t] = a list of number of (x_{1:t},x_{t+1})
-    mu_x_n = [[len(d) for d in mu_x_t.values()] for mu_x_t in mu_x]
-    # mu_x_n[t] = a list of starting index of (x_{1:t},x_{t+1}) for different x_{t+1}
-    mu_x_cumn = [np.cumsum([0] + mu_x_n_t) for mu_x_n_t in mu_x_n]
-    # mu_x_v[t]: a list of [x_{t}, ...] (so a list of list of values)
-    mu_x_v = [[list(d.keys()) for d in mu_x_t.values()] for mu_x_t in mu_x]
-    # mu_x_w[t]: a list of [#(x_{1:t},(x_{t+1}), ...] (so a list of list of counts)
+    # mu_x_c[t] = number of x_{1:t}
+    mu_x_cn = [len(mu_x_t) for mu_x_t in mu_x]
+    # mu_x_v[t][i] = a list of values of x_{t+1}
+    if quantized_value:
+        mu_x_v = [
+            [np.array([k for k in d.keys()]) for d in mu_x_t.values()]
+            for mu_x_t in mu_x
+        ]
+    else:
+        mu_x_v = [
+            [np.array([q2v[k] for k in d.keys()]) for d in mu_x_t.values()]
+            for mu_x_t in mu_x
+        ]
+    # mu_x_w[t][i] = a list of weights of x_{t+1}
     mu_x_w0 = [[list(d.values()) for d in mu_x_t.values()] for mu_x_t in mu_x]
-    # mu_x_w[t]: a list of [mu_{x_{1:t}}(x_{t+1}), ...] (so a list of list of weights)
     mu_x_w = [[np.array(l) / sum(l) for l in mu_x_w0_t] for mu_x_w0_t in mu_x_w0]
+
+    # Size of x_{t+1} after x_t
+    mu_x_n = [[len(d) for d in mu_x_t.values()] for mu_x_t in mu_x]
+    # mu_x_cumn[t] = a list of starting index of (x_{1:t},x_{t+1}) for different x_{t+1}
+    mu_x_cumn = [np.cumsum([0] + mu_x_n_t) for mu_x_n_t in mu_x_n]
+
     return mu_x_c, mu_x_cn, mu_x_v, mu_x_w, mu_x_cumn
+
+
+def l2_cost(vx, vy):
+    return (vx[:, None] - vy[None, :]) ** 2
+
+
+def solve_ot(cx, vx, wx, ix, jx, cy, vy, wy, iy, jy, Vtplus):
+    cost = l2_cost(vx, vy)
+    if Vtplus is not None:  # t < T-1
+        cost += Vtplus[ix:jx, iy:jy]
+    if len(vx) == 1 or len(vy) == 1:
+        res = np.dot(np.dot(wx, cost), wy)  # in this case we has closed solution
+    else:
+        res = np.sum(
+            cost * ot.lp.emd(wx, wy, cost)
+        )  # faster than ot.emd2(wx, wy, cost)
+    return res
+
+
+def nested2(mu_x_cn, mu_x_v, mu_x_w, mu_x_cumn, nu_y_cn, nu_y_v, nu_y_w, nu_y_cumn):
+
+    T = len(mu_x_cn)
+    V = [np.zeros([mu_x_cn[t], nu_y_cn[t]]) for t in range(T)]  # V_t(x_{1:t},y_{1:t})
+    for t in range(T - 1, -1, -1):
+        x_bar = tqdm(range(mu_x_cn[t]))
+        x_bar.set_description(f"Timestep {t}")
+        for cx, vx, wx, ix, jx in zip(
+            x_bar, mu_x_v[t], mu_x_w[t], mu_x_cumn[t][:-1], mu_x_cumn[t][1:]
+        ):
+            for cy, vy, wy, iy, jy in zip(
+                range(nu_y_cn[t]),
+                nu_y_v[t],
+                nu_y_w[t],
+                nu_y_cumn[t][:-1],
+                nu_y_cumn[t][1:],
+            ):
+                Vtplus = V[t + 1] if t < T - 1 else None
+                V[t][cx, cy] = solve_ot(cx, vx, wx, ix, jx, cy, vy, wy, iy, jy, Vtplus)
+
+    AW_2square = V[0][0, 0]
+    return AW_2square
+
+
+def chunk_process(arg):
+    x_arg, y_arg, Vtplus = arg
+    x_arg[0] = tqdm(x_arg[0])
+    Vt = np.zeros([len(x_arg[0]), len(y_arg[0])])
+    for cx, vx, wx, ix, jx in zip(*x_arg):
+        for cy, vy, wy, iy, jy in zip(*y_arg):
+            Vt[cx, cy] = solve_ot(cx, vx, wx, ix, jx, cy, vy, wy, iy, jy, Vtplus)
+    return Vt
+
+
+def nested2_parallel(
+    mu_x_cn, mu_x_v, mu_x_w, mu_x_cumn, nu_y_cn, nu_y_v, nu_y_w, nu_y_cumn
+):
+    T = len(mu_x_cn)
+    V = [np.zeros([mu_x_cn[t], nu_y_cn[t]]) for t in range(T)]  # V_t(x_{1:t},y_{1:t})
+    for t in range(T - 1, -1, -1):
+        n_processes = 6 if t > 1 else 1  # HERE WE NEED TO CHANGE BACK TO t>1
+        chunks = np.array_split(range(mu_x_cn[t]), n_processes)
+        args = []
+        for chunk in chunks:
+            x_arg = [
+                range(len(chunk)),
+                [mu_x_v[t][i] for i in chunk],
+                [mu_x_w[t][i] for i in chunk],
+                [mu_x_cumn[t][:-1][i] for i in chunk],
+                [mu_x_cumn[t][1:][i] for i in chunk],
+            ]
+            y_arg = [
+                range(nu_y_cn[t]),
+                nu_y_v[t],
+                nu_y_w[t],
+                nu_y_cumn[t][:-1],
+                nu_y_cumn[t][1:],
+            ]
+            Vtplus = V[t + 1] if t < T - 1 else None
+            arg = (x_arg, y_arg, Vtplus)
+            args.append(arg)
+
+        # for arg, chunk in zip(args, chunks):
+        #     res = chunk_process(arg)
+        #     V[t][chunk] = res
+
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            Vts = executor.map(chunk_process, args)
+
+        for chunk, Vt in zip(chunks, Vts):
+            V[t][chunk] = Vt
+
+    AW_2square = V[0][0, 0]
+    return AW_2square
 
 
 def adapted_wasserstein_squared(A, B, a=0, b=0):
@@ -102,6 +230,9 @@ def adapted_wasserstein_squared(A, B, a=0, b=0):
     l1_diag = np.sum(np.abs(np.diag(L.T @ M)))
     # Final adapted Wasserstein squared distance
     return mean_diff + trace_sum - 2 * l1_diag
+
+
+### OLD OLD OLD stuff, better understand but slower
 
 
 def quantization(adaptedX, adaptedY, markovian=False, verbose=True):
